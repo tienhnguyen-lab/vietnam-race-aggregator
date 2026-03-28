@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vietnam Race Aggregator</title>
+<style>
+  /* ── reset & base ─────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --surface2:  #22263a;
+    --border:    #2e3250;
+    --accent:    #4ade80;
+    --accent2:   #22d3ee;
+    --text:      #e2e8f0;
+    --muted:     #94a3b8;
+    --danger:    #f87171;
+    --warn:      #fbbf24;
+    --radius:    12px;
+    --shadow:    0 4px 24px rgba(0,0,0,.45);
+  }
+  html { font-size: 15px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { cursor: pointer; border: none; font: inherit; }
+  input, select {
+    font: inherit;
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent2); }
+
+  /* ── header ────────────────────────────────────────────────────── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header h1 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    color: var(--accent);
+  }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  #race-count {
+    margin-left: auto;
+    font-size: .85rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  /* ── filter bar ─────────────────────────────────────────────────── */
+  #filters {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  #search {
+    padding: 8px 14px;
+    width: 220px;
+    border-radius: 8px;
+  }
+  .filter-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .filter-group label {
+    font-size: .75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-right: 2px;
+  }
+  .chip {
+    padding: 5px 13px;
+    border-radius: 20px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: .82rem;
+    font-weight: 500;
+    transition: all .15s;
+  }
+  .chip:hover { border-color: var(--accent2); color: var(--text); }
+  .chip.active {
+    background: var(--accent2);
+    border-color: var(--accent2);
+    color: #0f1117;
+    font-weight: 700;
+  }
+  select#city-select, select#sort-select {
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: .85rem;
+  }
+
+  /* ── main grid ──────────────────────────────────────────────────── */
+  #main {
+    padding: 28px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 18px;
+  }
+  #empty {
+    display: none;
+    text-align: center;
+    padding: 80px 0;
+    color: var(--muted);
+    font-size: 1.1rem;
+  }
+  #loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 100px 0;
+    color: var(--muted);
+    gap: 10px;
+  }
+  .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent2);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── card ───────────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .15s, box-shadow .15s, border-color .15s;
+    display: flex;
+    flex-direction: column;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow);
+    border-color: var(--accent2);
+  }
+  .card-img {
+    width: 100%;
+    aspect-ratio: 16/7;
+    object-fit: cover;
+    background: var(--surface2);
+    display: block;
+  }
+  .card-img-placeholder {
+    width: 100%;
+    aspect-ratio: 16/7;
+    background: linear-gradient(135deg, var(--surface2) 0%, #1e2235 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+  }
+  .card-body {
+    padding: 14px 16px 16px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card-title {
+    font-size: .95rem;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: auto;
+    align-items: center;
+  }
+  .card-date {
+    font-size: .8rem;
+    color: var(--accent);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .card-location {
+    font-size: .8rem;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+  }
+  .badge-type-road       { background: #1e3a5f; color: #93c5fd; }
+  .badge-type-trail      { background: #1a3a1e; color: #86efac; }
+  .badge-type-triathlon  { background: #3a1a3a; color: #d8b4fe; }
+  .badge-type-ironman    { background: #3a2a1a; color: #fbbf24; }
+  .badge-type-duathlon   { background: #2a3a1a; color: #a3e635; }
+  .badge-type-other      { background: #2a2a2a; color: #94a3b8; }
+  .badge-status-open     { background: #14532d; color: #4ade80; }
+  .badge-status-upcoming { background: #3a2a00; color: #fbbf24; }
+  .badge-status-sold     { background: #3a1414; color: #f87171; }
+  .badge-status-unknown  { background: #1e1e2a; color: #64748b; }
+  .distances-row {
+    font-size: .75rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .dist-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px 7px;
+    font-size: .72rem;
+    color: var(--accent2);
+  }
+
+  /* ── modal ──────────────────────────────────────────────────────── */
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.7);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    backdrop-filter: blur(4px);
+  }
+  #modal-overlay.open { display: flex; }
+  #modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 100%;
+    max-width: 620px;
+    max-height: 88vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    animation: pop .18s ease;
+  }
+  @keyframes pop {
+    from { transform: scale(.94); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
+  #modal-img {
+    width: 100%;
+    aspect-ratio: 16/6;
+    object-fit: cover;
+    border-radius: 16px 16px 0 0;
+    display: block;
+    background: var(--surface2);
+  }
+  #modal-img-placeholder {
+    width: 100%;
+    aspect-ratio: 16/6;
+    background: linear-gradient(135deg, var(--surface2) 0%, #1e2235 100%);
+    border-radius: 16px 16px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3rem;
+  }
+  #modal-body { padding: 24px 28px 28px; }
+  #modal-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  #modal-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    line-height: 1.25;
+    margin-bottom: 18px;
+    color: var(--text);
+  }
+  .modal-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: flex-start;
+    font-size: .9rem;
+  }
+  .modal-row .icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+  .modal-row .label { color: var(--muted); min-width: 90px; flex-shrink: 0; }
+  .modal-row .value { color: var(--text); }
+  .modal-dists { display: flex; flex-wrap: wrap; gap: 5px; }
+  .modal-actions { margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: .9rem;
+    transition: opacity .15s;
+    text-decoration: none;
+  }
+  .btn:hover { opacity: .85; text-decoration: none; }
+  .btn-primary { background: var(--accent); color: #0f1117; }
+  .btn-secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+  #modal-close {
+    position: absolute;
+    top: 14px; right: 14px;
+    background: rgba(0,0,0,.5);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    width: 32px; height: 32px;
+    font-size: 1.1rem;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    z-index: 10;
+  }
+  #modal-wrapper { position: relative; }
+
+  /* ── responsive ─────────────────────────────────────────────────── */
+  @media (max-width: 600px) {
+    #filters { padding: 10px 14px; }
+    #main { padding: 14px; }
+    header { padding: 14px; }
+    #modal-body { padding: 16px; }
+    #search { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏃 Vietnam Races <span>2026–2027</span></h1>
+  <span id="race-count"></span>
+</header>
+
+<div id="filters">
+  <input type="search" id="search" placeholder="Search races, cities…" autocomplete="off">
+
+  <div class="filter-group">
+    <label>Type</label>
+    <button class="chip active" data-filter="type" data-value="">All</button>
+    <button class="chip" data-filter="type" data-value="Road">Road</button>
+    <button class="chip" data-filter="type" data-value="Trail">Trail</button>
+    <button class="chip" data-filter="type" data-value="Triathlon">Triathlon</button>
+  </div>
+
+  <div class="filter-group">
+    <label>Status</label>
+    <button class="chip active" data-filter="status" data-value="">All</button>
+    <button class="chip" data-filter="status" data-value="open">Open</button>
+    <button class="chip" data-filter="status" data-value="upcoming">Upcoming</button>
+  </div>
+
+  <div class="filter-group">
+    <label>City</label>
+    <select id="city-select">
+      <option value="">All cities</option>
+    </select>
+  </div>
+
+  <div class="filter-group" style="margin-left:auto">
+    <label>Sort</label>
+    <select id="sort-select">
+      <option value="date">Date ↑</option>
+      <option value="name">Name A–Z</option>
+    </select>
+  </div>
+</div>
+
+<div id="main">
+  <div id="loading"><div class="spinner"></div> Loading races…</div>
+  <div id="empty">No races match your filters.</div>
+  <div id="grid"></div>
+</div>
+
+<div id="modal-overlay" role="dialog" aria-modal="true">
+  <div id="modal-wrapper">
+    <button id="modal-close" aria-label="Close">✕</button>
+    <div id="modal"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const state = { type: '', status: '', city: '', sort: 'date', q: '' };
+let allRaces = [];
+let debounceTimer = null;
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+(async () => {
+  await Promise.all([loadMeta(), loadRaces()]);
+})();
+
+async function loadMeta() {
+  const res = await fetch('/api/meta');
+  const { cities } = await res.json();
+  const sel = document.getElementById('city-select');
+  cities.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    sel.appendChild(opt);
+  });
+}
+
+async function loadRaces() {
+  showLoading(true);
+  const params = new URLSearchParams();
+  if (state.sort)   params.set('sort',   state.sort);
+  if (state.type)   params.set('type',   state.type);
+  if (state.city)   params.set('city',   state.city);
+  if (state.status) params.set('status', state.status);
+  if (state.q)      params.set('q',      state.q);
+  const res = await fetch('/api/races?' + params);
+  allRaces = await res.json();
+  showLoading(false);
+  render(allRaces);
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function render(races) {
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+  grid.innerHTML = '';
+
+  document.getElementById('race-count').textContent =
+    races.length + ' race' + (races.length !== 1 ? 's' : '');
+
+  if (!races.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  races.forEach(r => {
+    const card = buildCard(r);
+    card.addEventListener('click', () => openModal(r));
+    grid.appendChild(card);
+  });
+}
+
+function buildCard(r) {
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  // Image
+  if (r.image_url) {
+    const img = document.createElement('img');
+    img.className = 'card-img';
+    img.src = r.image_url;
+    img.alt = r.race_name;
+    img.loading = 'lazy';
+    img.onerror = () => img.replaceWith(makePlaceholder('card-img-placeholder', typeEmoji(r.race_type)));
+    card.appendChild(img);
+  } else {
+    card.appendChild(makePlaceholder('card-img-placeholder', typeEmoji(r.race_type)));
+  }
+
+  const body = document.createElement('div');
+  body.className = 'card-body';
+
+  // Badges row
+  const badgesRow = document.createElement('div');
+  badgesRow.style.cssText = 'display:flex;gap:5px;flex-wrap:wrap;';
+  if (r.race_type) badgesRow.appendChild(typeBadge(r.race_type));
+  if (r.registration_status) badgesRow.appendChild(statusBadge(r.registration_status));
+  body.appendChild(badgesRow);
+
+  // Title
+  const title = document.createElement('div');
+  title.className = 'card-title';
+  title.textContent = r.race_name;
+  body.appendChild(title);
+
+  // Distances
+  if (r.distances && r.distances.length) {
+    const dr = document.createElement('div');
+    dr.className = 'distances-row';
+    r.distances.forEach(d => {
+      const chip = document.createElement('span');
+      chip.className = 'dist-chip';
+      chip.textContent = d;
+      dr.appendChild(chip);
+    });
+    body.appendChild(dr);
+  }
+
+  // Meta row
+  const meta = document.createElement('div');
+  meta.className = 'card-meta';
+
+  const dateEl = document.createElement('div');
+  dateEl.className = 'card-date';
+  dateEl.innerHTML = '📅 ' + (formatDate(r.date) || 'TBD');
+  meta.appendChild(dateEl);
+
+  const locEl = document.createElement('div');
+  locEl.className = 'card-location';
+  locEl.innerHTML = '📍 ' + (r.city || r.location || '—');
+  meta.appendChild(locEl);
+
+  body.appendChild(meta);
+  card.appendChild(body);
+  return card;
+}
+
+function makePlaceholder(cls, emoji) {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.textContent = emoji;
+  return el;
+}
+
+// ── Modal ──────────────────────────────────────────────────────────────────
+function openModal(r) {
+  const overlay = document.getElementById('modal-overlay');
+  const modal   = document.getElementById('modal');
+  modal.innerHTML = '';
+
+  // Image
+  if (r.image_url) {
+    const img = document.createElement('img');
+    img.id = 'modal-img';
+    img.src = r.image_url;
+    img.alt = r.race_name;
+    img.onerror = () => img.replaceWith(makePlaceholder('modal-img-placeholder', typeEmoji(r.race_type)));
+    modal.appendChild(img);
+  } else {
+    modal.appendChild(makePlaceholder('modal-img-placeholder', typeEmoji(r.race_type)));
+  }
+
+  const body = document.createElement('div');
+  body.id = 'modal-body';
+
+  // Badges
+  const badges = document.createElement('div');
+  badges.id = 'modal-badges';
+  if (r.race_type)            badges.appendChild(typeBadge(r.race_type));
+  if (r.registration_status)  badges.appendChild(statusBadge(r.registration_status));
+  body.appendChild(badges);
+
+  // Title
+  const title = document.createElement('h2');
+  title.id = 'modal-title';
+  title.textContent = r.race_name;
+  body.appendChild(title);
+
+  // Rows
+  const rows = [
+    ['📅', 'Date',       formatDate(r.date) || 'TBD'],
+    ['📍', 'Location',   r.location || r.city || '—'],
+    ['🏙️',  'City',      r.city || '—'],
+    ['🏢', 'Organizer',  r.organizer || '—'],
+  ];
+  rows.forEach(([icon, label, value]) => {
+    if (value === '—' && label !== 'Date') return; // skip empty
+    body.appendChild(makeRow(icon, label, value));
+  });
+
+  // Distances
+  if (r.distances && r.distances.length) {
+    const row = document.createElement('div');
+    row.className = 'modal-row';
+    row.innerHTML = `<span class="icon">🏁</span><span class="label">Distances</span>`;
+    const val = document.createElement('div');
+    val.className = 'modal-dists';
+    r.distances.forEach(d => {
+      const chip = document.createElement('span');
+      chip.className = 'dist-chip';
+      chip.textContent = d;
+      val.appendChild(chip);
+    });
+    row.appendChild(val);
+    body.appendChild(row);
+  }
+
+  // Sources
+  if (r.sources && r.sources.length) {
+    body.appendChild(makeRow('🔗', 'Source', r.sources.join(', ')));
+  }
+
+  // Actions
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+
+  const regUrl = r.registration_url || r.official_website;
+  if (regUrl) {
+    const regBtn = document.createElement('a');
+    regBtn.href = regUrl;
+    regBtn.target = '_blank';
+    regBtn.rel = 'noopener noreferrer';
+    regBtn.className = 'btn btn-primary';
+    regBtn.innerHTML = '🎟️ Register';
+    actions.appendChild(regBtn);
+  }
+  if (r.official_website && r.official_website !== regUrl) {
+    const webBtn = document.createElement('a');
+    webBtn.href = r.official_website;
+    webBtn.target = '_blank';
+    webBtn.rel = 'noopener noreferrer';
+    webBtn.className = 'btn btn-secondary';
+    webBtn.innerHTML = '🌐 Website';
+    actions.appendChild(webBtn);
+  }
+  body.appendChild(actions);
+
+  modal.appendChild(body);
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function makeRow(icon, label, value) {
+  const row = document.createElement('div');
+  row.className = 'modal-row';
+  row.innerHTML = `<span class="icon">${icon}</span><span class="label">${label}</span><span class="value">${escHtml(value)}</span>`;
+  return row;
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.getElementById('modal-close').addEventListener('click', closeModal);
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) closeModal();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// ── Filter handlers ─────────────────────────────────────────────────────────
+document.querySelectorAll('[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const filter = btn.dataset.filter;
+    const value  = btn.dataset.value;
+    // Deactivate siblings
+    document.querySelectorAll(`[data-filter="${filter}"]`)
+      .forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state[filter] = value;
+    loadRaces();
+  });
+});
+
+document.getElementById('city-select').addEventListener('change', e => {
+  state.city = e.target.value;
+  loadRaces();
+});
+
+document.getElementById('sort-select').addEventListener('change', e => {
+  state.sort = e.target.value;
+  loadRaces();
+});
+
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    state.q = e.target.value.trim();
+    loadRaces();
+  }, 280);
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function showLoading(on) {
+  document.getElementById('loading').style.display = on ? 'flex' : 'none';
+  document.getElementById('grid').style.display    = on ? 'none' : 'grid';
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  const dt = new Date(d + 'T00:00:00');
+  if (isNaN(dt)) return d;
+  return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function typeBadge(type) {
+  const badge = document.createElement('span');
+  badge.className = 'badge badge-type-' + (type || 'other').toLowerCase();
+  badge.textContent = type || 'Other';
+  return badge;
+}
+
+function statusBadge(status) {
+  const map = { 'Open': 'open', 'Upcoming': 'upcoming', 'Sold Out': 'sold', 'Unknown': 'unknown' };
+  const badge = document.createElement('span');
+  badge.className = 'badge badge-status-' + (map[status] || 'unknown');
+  badge.textContent = status;
+  return badge;
+}
+
+function typeEmoji(type) {
+  const map = { Road: '🏃', Trail: '⛰️', Triathlon: '🏊', Ironman: '💪', Duathlon: '🚴' };
+  return map[type] || '🏅';
+}
+</script>
+</body>
+</html>
