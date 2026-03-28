@@ -1,0 +1,9 @@
+playwright==1.44.0
+beautifulsoup4==4.12.3
+requests==2.32.3
+thefuzz==0.22.1
+python-Levenshtein==0.25.1
+rich==13.7.1
+click==8.1.7
+lxml==5.2.2
+aiohttp==3.9.5

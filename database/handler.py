@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-DB_PATH = Path(__file__).parent.parent / "races.db"
+import os
+_default_db = Path(__file__).parent.parent / "races.db"
+DB_PATH = Path(os.environ.get("DB_PATH", str(_default_db)))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS races (
