@@ -25,6 +25,9 @@ logs/
 debug_*.py
 irace_dump.html
 
+# Scraper requirements (local dev only — Railway uses requirements.txt)
+requirements-scraper.txt
+
 # macOS
 .DS_Store
 

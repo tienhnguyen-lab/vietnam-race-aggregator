@@ -1,3 +1,7 @@
-# Web server — used by Railway (production)
+# Web server + non-Playwright scrapers (Railway production)
 flask==3.0.3
 gunicorn==22.0.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+thefuzz==0.22.1
+lxml==5.2.2
