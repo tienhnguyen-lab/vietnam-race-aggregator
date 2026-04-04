@@ -185,6 +185,9 @@ class DatabaseHandler:
         where_clauses = []
         params: list[Any] = []
 
+        # Permanent date filter (SQLite handles ASCII dates fine)
+        where_clauses.append("(date = '' OR date >= DATE('now'))")
+
         if race_type:
             where_clauses.append("LOWER(race_type) = LOWER(?)")
             params.append(race_type)
@@ -212,6 +215,13 @@ class DatabaseHandler:
             params,
         )
         rows = [dict(r) for r in cur.fetchall()]
+
+        # Python-side name filters (SQLite LOWER() doesn't handle Vietnamese)
+        _BLOCKED = ("chèo sup", "cheo sup", "trek")
+        rows = [
+            r for r in rows
+            if not any(kw in (r.get("race_name") or "").lower() for kw in _BLOCKED)
+        ]
 
         for row in rows:
             row["distances"] = json.loads(row.get("distances") or "[]")
