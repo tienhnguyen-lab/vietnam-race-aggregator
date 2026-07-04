@@ -158,7 +158,13 @@ class DatabaseHandler:
     def connect(self):
         if POSTGRES_URL:
             import psycopg
-            self._conn = _PgConn(psycopg.connect(POSTGRES_URL, autocommit=True))
+            conn = psycopg.connect(POSTGRES_URL, autocommit=True)
+            # Neon's pooled endpoint runs PgBouncer in transaction mode, which
+            # can't keep server-side prepared statements across pooled connections
+            # (causes intermittent 'prepared statement already exists' errors).
+            # Disabling them makes both the pooled and direct endpoints reliable.
+            conn.prepare_threshold = None
+            self._conn = _PgConn(conn)
             self._is_pg = True
         else:
             self._conn = sqlite3.connect(self.db_path)
