@@ -38,3 +38,4 @@ requirements-scraper.txt
 # Environment variables
 .env
 .env.*
+!.env.example

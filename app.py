@@ -3,11 +3,9 @@ Vietnam Race Aggregator — Web UI
 Run:  python app.py
 Then open: http://localhost:5001
 """
-import json
 import os
 import sys
 import logging
-import threading
 import time
 from pathlib import Path
 
@@ -22,31 +20,19 @@ logger = logging.getLogger(__name__)
 SEED_FILE = Path(__file__).parent / "seed_data.json"
 SYNC_KEY  = os.environ.get("SYNC_KEY", "")   # must be set — endpoint blocked if missing
 
-# ── /api/sync concurrency + rate-limit state ─────────────────────────────────
-_sync_lock        = threading.Lock()   # prevents two syncs running at once (#13)
-_sync_running     = False              # flag visible to status endpoint
-_sync_last_called = 0.0               # epoch seconds of last /api/sync request
-SYNC_COOLDOWN_SEC = 300               # minimum 5 min between syncs (#11)
+# ── /api/sync rate-limit state (best-effort; per warm instance) ──────────────
+_sync_last_called = 0.0               # epoch seconds of last manual sync request
+SYNC_COOLDOWN_SEC = 300               # minimum 5 min between manual syncs
 
 
 # ── Auto-seed on startup ─────────────────────────────────────────────────────
 
 def _seed_if_empty() -> None:
     """Load seed_data.json into the DB if the races table is empty."""
-    if not SEED_FILE.exists():
-        return
     with DatabaseHandler() as db:
-        count = db.conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
-        if count > 0:
-            return
-        rows  = json.loads(SEED_FILE.read_text(encoding="utf-8"))
-        cols  = [c for c in rows[0].keys() if c != "id"]
-        ph    = ", ".join("?" * len(cols))
-        col_s = ", ".join(cols)
-        sql   = f"INSERT OR IGNORE INTO races ({col_s}) VALUES ({ph})"
-        db.conn.executemany(sql, [[r[c] for c in cols] for r in rows])
-        db.conn.commit()
-        logger.info("Seeded %d races from seed_data.json", len(rows))
+        added = db.seed_if_empty(SEED_FILE)
+        if added:
+            logger.info("Seeded %d races from seed_data.json", added)
 
 with app.app_context():
     _seed_if_empty()
@@ -116,92 +102,95 @@ def api_meta():
     return jsonify({"cities": cities, "types": types})
 
 
-def _run_sync_background() -> dict:
+def _run_scrapers_sync() -> dict:
     """
-    Run non-Playwright scrapers in a background thread.
-    Returns a results dict written to the thread's local scope.
+    Run the serverless-safe scrapers synchronously and persist results.
+
+    Only `requests`/BeautifulSoup scrapers are included — Playwright-based
+    sources (123Go, iRace, VietRace365) need a headless Chromium binary that
+    isn't available in Vercel's serverless runtime, so they're intentionally
+    excluded here. Run those locally via `python main.py sync` and commit the
+    refreshed seed_data.json instead.
+
+    Each scraper's `.run()` handles enrich → dedup → upsert → scraper_log,
+    and swallows its own errors, so one failing source won't abort the rest.
     """
-    global _sync_running
-    results = {}
-    try:
-        from scrapers.actiup             import ActiUpScraper
-        from scrapers.truerace           import TrueRaceScraper
-        from scrapers.vietrace365        import VietRace365Scraper
-        from scrapers.vnexpress_schedule import VnExpressScheduleScraper
+    from scrapers.actiup             import ActiUpScraper
+    from scrapers.truerace           import TrueRaceScraper
+    from scrapers.vnexpress_schedule import VnExpressScheduleScraper
 
-        scraper_classes = [
-            ActiUpScraper,
-            TrueRaceScraper,
-            VietRace365Scraper,
-            VnExpressScheduleScraper,
-        ]
-        with DatabaseHandler() as db:
-            for cls in scraper_classes:
-                s = cls(db)
-                try:
-                    races = s.scrape()
-                    for r in races:
-                        db.upsert_race(r, source=s.name)
-                    results[s.name] = {"ok": True, "count": len(races)}
-                    logger.info("sync: %s → %d races", s.name, len(races))
-                except Exception as exc:
-                    results[s.name] = {"ok": False, "error": str(exc)}
-                    logger.warning("sync: %s failed: %s", s.name, exc)
-    except Exception as exc:
-        logger.error("sync background thread crashed: %s", exc)
-    finally:
-        _sync_running = False
-
+    scraper_classes = [ActiUpScraper, TrueRaceScraper, VnExpressScheduleScraper]
+    results: dict = {}
+    with DatabaseHandler() as db:
+        for cls in scraper_classes:
+            s = cls(db)
+            try:
+                count = s.run()
+                results[s.name] = {"ok": True, "count": count}
+                logger.info("sync: %s → %d races", s.name, count)
+            except Exception as exc:  # run() normally swallows, but be defensive
+                results[s.name] = {"ok": False, "error": str(exc)}
+                logger.warning("sync: %s failed: %s", s.name, exc)
     return results
+
+
+def _sync_authorized() -> bool:
+    """
+    Authorize a sync request. Vercel Cron sends `Authorization: Bearer $CRON_SECRET`;
+    manual callers may instead send the `X-Sync-Key` header. At least one of the two
+    secrets must be configured, otherwise the endpoint stays closed.
+    """
+    cron_secret = os.environ.get("CRON_SECRET", "")
+    if not cron_secret and not SYNC_KEY:
+        return False
+    if cron_secret and request.headers.get("Authorization") == f"Bearer {cron_secret}":
+        return True
+    if SYNC_KEY and request.headers.get("X-Sync-Key") == SYNC_KEY:
+        return True
+    return False
+
+
+@app.route("/api/cron/sync", methods=["GET", "POST"])
+def api_cron_sync():
+    """
+    Live scrape of the serverless-safe sources. Invoked on a schedule by Vercel
+    Cron (GET + Bearer CRON_SECRET), or manually with the X-Sync-Key header.
+    Runs synchronously — serverless functions are frozen after the response is
+    returned, so a background thread would never finish.
+    """
+    global _sync_last_called
+
+    if not _sync_authorized():
+        # 503 if the server has no secret configured at all; 401 if the caller
+        # simply presented the wrong one.
+        if not os.environ.get("CRON_SECRET") and not SYNC_KEY:
+            return jsonify({"error": "Sync not configured (set CRON_SECRET or SYNC_KEY)."}), 503
+        return jsonify({"error": "Unauthorized"}), 401
+
+    _sync_last_called = time.time()
+    results = _run_scrapers_sync()
+    return jsonify({"status": "ok", "results": results})
 
 
 @app.post("/api/sync")
 def api_sync():
     """
-    Trigger a live scrape (non-Playwright sources only).
-    Requires X-Sync-Key header matching the SYNC_KEY env var.
-    Returns immediately — scraping runs in a background thread.
-    Min 5 minutes between calls; concurrent calls are rejected.
+    Backwards-compatible manual trigger. Same behaviour as /api/cron/sync but
+    accepts POST + X-Sync-Key only, and keeps the 5-minute cooldown.
     """
-    global _sync_running, _sync_last_called
+    global _sync_last_called
 
-    # ── Auth (#security) ─────────────────────────────────────────────────────
     if not SYNC_KEY or request.headers.get("X-Sync-Key") != SYNC_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
-    # ── Rate limit: 5-min cooldown (#11) ─────────────────────────────────────
     elapsed = time.time() - _sync_last_called
     if elapsed < SYNC_COOLDOWN_SEC:
         wait = int(SYNC_COOLDOWN_SEC - elapsed)
         return jsonify({"error": f"Too soon. Try again in {wait}s."}), 429
 
-    # ── Concurrency lock (#6 + #13) ───────────────────────────────────────────
-    if not _sync_lock.acquire(blocking=False):
-        return jsonify({"error": "Sync already in progress."}), 409
-
-    _sync_running     = True
     _sync_last_called = time.time()
-
-    thread = threading.Thread(target=_run_sync_background, daemon=True)
-    thread.start()
-
-    # Release lock when thread finishes
-    def _release():
-        thread.join()
-        _sync_lock.release()
-    threading.Thread(target=_release, daemon=True).start()
-
-    return jsonify({"status": "started", "note": "Check /api/sync/status for progress."}), 202
-
-
-@app.get("/api/sync/status")
-def api_sync_status():
-    """Quick poll endpoint — is a sync currently running?"""
-    return jsonify({
-        "running":       _sync_running,
-        "last_called":   _sync_last_called or None,
-        "cooldown_secs": SYNC_COOLDOWN_SEC,
-    })
+    results = _run_scrapers_sync()
+    return jsonify({"status": "ok", "results": results})
 
 
 # ── Frontend ─────────────────────────────────────────────────────────────────

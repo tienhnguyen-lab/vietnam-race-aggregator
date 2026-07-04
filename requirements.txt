@@ -1,7 +1,16 @@
-# Web server + non-Playwright scrapers (Railway production)
+# Vercel serverless deps (web tier + cron scraper).
+# Playwright is intentionally absent — those scrapers only run locally via
+# `python main.py sync` (see requirements-scraper.txt).
 flask==3.0.3
-gunicorn==22.0.0
 requests==2.32.3
 beautifulsoup4==4.12.3
 thefuzz==0.22.1
+python-Levenshtein==0.25.1
 lxml==5.2.2
+
+# Remote Postgres (Neon) — used when POSTGRES_URL / DATABASE_URL is set.
+# Local dev falls back to SQLite (stdlib), so this is only needed in the cloud.
+psycopg[binary]==3.2.9
+
+# Kept for the legacy Railway/Procfile path; unused (and ignored) on Vercel.
+gunicorn==22.0.0
