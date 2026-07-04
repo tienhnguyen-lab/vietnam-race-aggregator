@@ -14,6 +14,9 @@ DB is **Neon Postgres** in the cloud, **SQLite** locally (auto-selected by env).
 
 - **No migrations.** Schema + the 52-row seed from `seed_data.json` are created
   lazily on the first request to an empty DB.
+- **Isolated schema.** On Postgres the app keeps its tables in a dedicated
+  `race_aggregator` schema (override with `PG_SCHEMA`), so a Neon database can be
+  safely shared with another project — no `public`-table collisions.
 - **Cron** (`/api/cron/sync`, daily `0 19 * * *`) is wired in `vercel.json` and
   runs only the `requests`-based scrapers. Playwright sources (`123go`, `irace`,
   `vietrace365`) don't run on Vercel — run `python main.py sync` locally

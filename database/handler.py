@@ -33,76 +33,59 @@ POSTGRES_URL = (
     or ""
 )
 
-# ── Dialect-specific schema DDL (executed statement-by-statement) ────────────
-_SCHEMA_SQLITE = [
-    """
-    CREATE TABLE IF NOT EXISTS races (
-        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-        race_name           TEXT NOT NULL,
-        slug                TEXT UNIQUE NOT NULL,
-        date                TEXT,
-        location            TEXT,
-        city                TEXT,
-        race_type           TEXT CHECK(race_type IN ('Road','Trail','Triathlon','Ironman','Duathlon','Other')),
-        distances           TEXT,
-        pricing             TEXT,
-        official_website    TEXT,
-        registration_url    TEXT,
-        organizer           TEXT,
-        registration_status TEXT CHECK(registration_status IN ('Open','Sold Out','Upcoming','Unknown')) DEFAULT 'Unknown',
-        image_url           TEXT,
-        sources             TEXT,
-        last_updated        TEXT
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS scraper_log (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        scraper     TEXT NOT NULL,
-        run_at      TEXT NOT NULL,
-        status      TEXT NOT NULL,
-        races_found INTEGER DEFAULT 0,
-        message     TEXT
-    )
-    """,
-    # Legacy migration: image_url added after initial release. SQLite has no
-    # ADD COLUMN IF NOT EXISTS, so this may fail on existing DBs — caller ignores.
-    "ALTER TABLE races ADD COLUMN image_url TEXT",
-]
+# Postgres schema this app owns. Its tables live here (not in `public`), so the
+# database can be shared with other apps without any table-name collisions.
+# Only alphanumerics/underscore are allowed to keep the identifier injection-safe.
+_raw_schema = os.environ.get("PG_SCHEMA", "race_aggregator").strip()
+PG_SCHEMA = _raw_schema if _raw_schema.replace("_", "").isalnum() else "race_aggregator"
 
-_SCHEMA_PG = [
+def _schema_statements(is_pg: bool, races: str, log: str, schema: Optional[str]) -> list[str]:
     """
-    CREATE TABLE IF NOT EXISTS races (
-        id                  SERIAL PRIMARY KEY,
-        race_name           TEXT NOT NULL,
-        slug                TEXT UNIQUE NOT NULL,
-        date                TEXT,
-        location            TEXT,
-        city                TEXT,
-        race_type           TEXT CHECK(race_type IN ('Road','Trail','Triathlon','Ironman','Duathlon','Other')),
-        distances           TEXT,
-        pricing             TEXT,
-        official_website    TEXT,
-        registration_url    TEXT,
-        organizer           TEXT,
-        registration_status TEXT CHECK(registration_status IN ('Open','Sold Out','Upcoming','Unknown')) DEFAULT 'Unknown',
-        image_url           TEXT,
-        sources             TEXT,
-        last_updated        TEXT
-    )
-    """,
+    Build the DDL for the given dialect, with fully-qualified table names so the
+    Postgres tables land in a dedicated schema (isolated from any other app on
+    the same database). `races`/`log` are the (schema-qualified) table names.
     """
-    CREATE TABLE IF NOT EXISTS scraper_log (
-        id          SERIAL PRIMARY KEY,
-        scraper     TEXT NOT NULL,
-        run_at      TEXT NOT NULL,
-        status      TEXT NOT NULL,
-        races_found INTEGER DEFAULT 0,
-        message     TEXT
-    )
-    """,
-    "ALTER TABLE races ADD COLUMN IF NOT EXISTS image_url TEXT",
-]
+    pk = "SERIAL PRIMARY KEY" if is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    stmts = []
+    if is_pg and schema:
+        stmts.append(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+    stmts += [
+        f"""
+        CREATE TABLE IF NOT EXISTS {races} (
+            id                  {pk},
+            race_name           TEXT NOT NULL,
+            slug                TEXT UNIQUE NOT NULL,
+            date                TEXT,
+            location            TEXT,
+            city                TEXT,
+            race_type           TEXT CHECK(race_type IN ('Road','Trail','Triathlon','Ironman','Duathlon','Other')),
+            distances           TEXT,
+            pricing             TEXT,
+            official_website    TEXT,
+            registration_url    TEXT,
+            organizer           TEXT,
+            registration_status TEXT CHECK(registration_status IN ('Open','Sold Out','Upcoming','Unknown')) DEFAULT 'Unknown',
+            image_url           TEXT,
+            sources             TEXT,
+            last_updated        TEXT
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS {log} (
+            id          {pk},
+            scraper     TEXT NOT NULL,
+            run_at      TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            races_found INTEGER DEFAULT 0,
+            message     TEXT
+        )
+        """,
+        # Legacy migration: image_url added after initial release. Postgres uses
+        # IF NOT EXISTS; SQLite can't, so its ADD COLUMN may fail — caller ignores.
+        (f"ALTER TABLE {races} ADD COLUMN IF NOT EXISTS image_url TEXT" if is_pg
+         else f"ALTER TABLE {races} ADD COLUMN image_url TEXT"),
+    ]
+    return stmts
 
 
 class _PgConn:
@@ -151,6 +134,10 @@ class DatabaseHandler:
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._is_pg: bool = False
+        # Schema-qualified table names. Set for real in connect(); SQLite has no
+        # schemas so it uses bare names.
+        self._races = "races"
+        self._log = "scraper_log"
 
     # ------------------------------------------------------------------
     # Connection management
@@ -166,11 +153,15 @@ class DatabaseHandler:
             conn.prepare_threshold = None
             self._conn = _PgConn(conn)
             self._is_pg = True
+            self._races = f"{PG_SCHEMA}.races"
+            self._log = f"{PG_SCHEMA}.scraper_log"
         else:
             self._conn = sqlite3.connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._is_pg = False
+            self._races = "races"
+            self._log = "scraper_log"
         self._apply_schema()
 
     def close(self):
@@ -208,8 +199,8 @@ class DatabaseHandler:
         return dict(zip(cols, r))
 
     def _apply_schema(self):
-        statements = _SCHEMA_PG if self._is_pg else _SCHEMA_SQLITE
-        for stmt in statements:
+        schema = PG_SCHEMA if self._is_pg else None
+        for stmt in _schema_statements(self._is_pg, self._races, self._log, schema):
             try:
                 self.conn.execute(stmt)
             except Exception:
@@ -226,7 +217,7 @@ class DatabaseHandler:
         seed_path = Path(seed_path)
         if not seed_path.exists():
             return 0
-        count = self.conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
+        count = self.conn.execute(f"SELECT COUNT(*) FROM {self._races}").fetchone()[0]
         if count and int(count) > 0:
             return 0
         rows = json.loads(seed_path.read_text(encoding="utf-8"))
@@ -237,9 +228,9 @@ class DatabaseHandler:
         ph = ", ".join(["?"] * len(cols))
         conflict = "ON CONFLICT (slug) DO NOTHING" if self._is_pg else "OR IGNORE"
         if self._is_pg:
-            sql = f"INSERT INTO races ({col_sql}) VALUES ({ph}) {conflict}"
+            sql = f"INSERT INTO {self._races} ({col_sql}) VALUES ({ph}) {conflict}"
         else:
-            sql = f"INSERT {conflict} INTO races ({col_sql}) VALUES ({ph})"
+            sql = f"INSERT {conflict} INTO {self._races} ({col_sql}) VALUES ({ph})"
         self.conn.executemany(sql, [[r.get(c) for c in cols] for r in rows])
         self.conn.commit()
         return len(rows)
@@ -269,7 +260,7 @@ class DatabaseHandler:
             cols = ", ".join(row.keys())
             placeholders = ", ".join(["?"] * len(row))
             self.conn.execute(
-                f"INSERT INTO races ({cols}) VALUES ({placeholders})",
+                f"INSERT INTO {self._races} ({cols}) VALUES ({placeholders})",
                 list(row.values()),
             )
             self.conn.commit()
@@ -313,14 +304,14 @@ class DatabaseHandler:
 
             set_clause = ", ".join(f"{k} = ?" for k in updates)
             self.conn.execute(
-                f"UPDATE races SET {set_clause} WHERE slug = ?",
+                f"UPDATE {self._races} SET {set_clause} WHERE slug = ?",
                 list(updates.values()) + [slug],
             )
             self.conn.commit()
             return existing["id"]
 
     def _fetch_by_slug(self, slug: str) -> Optional[dict]:
-        cur = self.conn.execute("SELECT * FROM races WHERE slug = ?", (slug,))
+        cur = self.conn.execute(f"SELECT * FROM {self._races} WHERE slug = ?", (slug,))
         return self._one(cur)
 
     # ------------------------------------------------------------------
@@ -371,7 +362,7 @@ class DatabaseHandler:
             order_sql = "ORDER BY date ASC NULLS LAST"
 
         cur = self.conn.execute(
-            f"SELECT * FROM races {where_sql} {order_sql}",
+            f"SELECT * FROM {self._races} {where_sql} {order_sql}",
             params,
         )
         rows = self._rows(cur)
@@ -394,7 +385,7 @@ class DatabaseHandler:
         return rows
 
     def get_all_slugs(self) -> list[str]:
-        cur = self.conn.execute("SELECT slug FROM races")
+        cur = self.conn.execute(f"SELECT slug FROM {self._races}")
         return [r[0] for r in cur.fetchall()]
 
     # ------------------------------------------------------------------
@@ -408,7 +399,7 @@ class DatabaseHandler:
         message: str = "",
     ):
         self.conn.execute(
-            "INSERT INTO scraper_log (scraper, run_at, status, races_found, message) "
+            f"INSERT INTO {self._log} (scraper, run_at, status, races_found, message) "
             "VALUES (?, ?, ?, ?, ?)",
             (scraper, datetime.utcnow().isoformat(), status, races_found, message),
         )
@@ -418,12 +409,12 @@ class DatabaseHandler:
         # The original SQLite "GROUP BY scraper with bare columns" is invalid in
         # Postgres. A window function picks the latest row per scraper in both.
         cur = self.conn.execute(
-            """
+            f"""
             SELECT scraper, run_at AS last_run, status, races_found, message
             FROM (
                 SELECT scraper, run_at, status, races_found, message,
                        ROW_NUMBER() OVER (PARTITION BY scraper ORDER BY run_at DESC) AS rn
-                FROM scraper_log
+                FROM {self._log}
             ) t
             WHERE rn = 1
             ORDER BY scraper
